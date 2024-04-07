@@ -17,7 +17,7 @@ ARG RELEASE_VERSION=3.0.1
 FROM multiarch/qemu-user-static:x86_64-arm as qemu-arm32
 FROM multiarch/qemu-user-static:x86_64-aarch64 as qemu-arm64
 
-FROM debian:bullseye-slim as builder-base
+FROM debian:bookworm-slim as builder-base
 
 COPY --from=qemu-arm32 /usr/bin/qemu-arm-static /usr/bin/
 COPY --from=qemu-arm64 /usr/bin/qemu-aarch64-static /usr/bin/
@@ -33,8 +33,7 @@ RUN mkdir -p /fluent-bit/bin /fluent-bit/etc /fluent-bit/log
 ENV DEBIAN_FRONTEND noninteractive
 
 # hadolint ignore=DL3008
-RUN echo "deb http://deb.debian.org/debian bullseye-backports main" >> /etc/apt/sources.list && \
-    apt-get update && \
+RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     build-essential \
     curl \
@@ -46,13 +45,14 @@ RUN echo "deb http://deb.debian.org/debian bullseye-backports main" >> /etc/apt/
     libssl-dev \
     libsasl2-dev \
     pkg-config \
-    libsystemd-dev/bullseye-backports \
+    libsystemd-dev \
     zlib1g-dev \
     libpq-dev \
     postgresql-server-dev-all \
     flex \
     bison \
     libyaml-dev \
+    llvm libmlir-14-dev libclang-common-14-dev libedit-dev libpfm4-dev libpolly-14-dev libcurl4-openssl-dev \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
@@ -76,10 +76,12 @@ RUN cmake -DFLB_RELEASE=On \
     -DFLB_NIGHTLY_BUILD="$FLB_NIGHTLY_BUILD" \
     -DFLB_LOG_NO_CONTROL_CHARS=On \
     -DFLB_CHUNK_TRACE="$FLB_CHUNK_TRACE" \
+    -DFLB_WAMRC=On \
     ..
 
 RUN make -j "$(getconf _NPROCESSORS_ONLN)"
 RUN install bin/fluent-bit /fluent-bit/bin/
+RUN install bin/flb-wamrc /fluent-bit/bin/
 
 # Configuration files
 COPY conf/fluent-bit.conf \
@@ -97,7 +99,7 @@ RUN /fluent-bit/bin/fluent-bit -J > /fluent-bit/etc/schema.json
 
 # Simple example of how to properly extract packages for reuse in distroless
 # Taken from: https://github.com/GoogleContainerTools/distroless/issues/863
-FROM debian:bullseye-slim as deb-extractor
+FROM debian:bookworm-slim as deb-extractor
 COPY --from=qemu-arm32 /usr/bin/qemu-arm-static /usr/bin/
 COPY --from=qemu-arm64 /usr/bin/qemu-aarch64-static /usr/bin/
 
@@ -105,14 +107,13 @@ COPY --from=qemu-arm64 /usr/bin/qemu-aarch64-static /usr/bin/
 # We also include some extra handling for the status files that some tooling uses for scanning, etc.
 WORKDIR /tmp
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
-RUN echo "deb http://deb.debian.org/debian bullseye-backports main" >> /etc/apt/sources.list && \
-    apt-get update && \
+RUN apt-get update && \
     apt-get download \
-    libssl1.1 \
+    libssl3 \
     libsasl2-2 \
     pkg-config \
     libpq5 \
-    libsystemd0/bullseye-backports \
+    libsystemd0 \
     zlib1g \
     ca-certificates \
     libatomic1 \
@@ -120,7 +121,7 @@ RUN echo "deb http://deb.debian.org/debian bullseye-backports main" >> /etc/apt/
     libzstd1 \
     liblz4-1 \
     libgssapi-krb5-2 \
-    libldap-2.4-2 \
+    libldap-2.5-0 \
     libgpg-error0 \
     libkrb5-3 \
     libk5crypto3 \
@@ -135,9 +136,10 @@ RUN echo "deb http://deb.debian.org/debian bullseye-backports main" >> /etc/apt/
     libnettle8 \
     libhogweed6 \
     libgmp10 \
-    libffi7 \
+    libffi8 \
     liblzma5 \
-    libyaml-0-2 && \
+    libyaml-0-2 \
+    libtinfo6 libcurl4 libcap2 libnghttp2-14 librtmp1 libssh2-1 libpsl5 libbrotli1 && \
     mkdir -p /dpkg/var/lib/dpkg/status.d/ && \
     for deb in *.deb; do \
     package_name=$(dpkg-deb -I "${deb}" | awk '/^ Package: .*$/ {print $2}'); \
@@ -152,7 +154,7 @@ RUN find /dpkg/ -type d -empty -delete && \
 
 # We want latest at time of build
 # hadolint ignore=DL3006
-FROM gcr.io/distroless/cc-debian11 as production
+FROM gcr.io/distroless/cc-debian12 as production
 ARG RELEASE_VERSION
 ENV FLUENT_BIT_VERSION=${RELEASE_VERSION}
 LABEL description="Fluent Bit multi-architecture container image" \
@@ -183,7 +185,7 @@ EXPOSE 2020
 ENTRYPOINT [ "/fluent-bit/bin/fluent-bit" ]
 CMD ["/fluent-bit/bin/fluent-bit", "-c", "/fluent-bit/etc/fluent-bit.conf"]
 
-FROM debian:bullseye-slim as debug
+FROM debian:bookworm-slim as debug
 ARG RELEASE_VERSION
 ENV FLUENT_BIT_VERSION=${RELEASE_VERSION}
 LABEL description="Fluent Bit multi-architecture debug container image" \
@@ -204,14 +206,13 @@ COPY --from=qemu-arm64 /usr/bin/qemu-aarch64-static /usr/bin/
 ENV DEBIAN_FRONTEND noninteractive
 
 # hadolint ignore=DL3008
-RUN echo "deb http://deb.debian.org/debian bullseye-backports main" >> /etc/apt/sources.list && \
-    apt-get update && \
+RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-    libssl1.1 \
+    libssl3 \
     libsasl2-2 \
     pkg-config \
     libpq5 \
-    libsystemd0/bullseye-backports \
+    libsystemd0 \
     zlib1g \
     ca-certificates \
     libatomic1 \
@@ -225,7 +226,8 @@ RUN echo "deb http://deb.debian.org/debian bullseye-backports main" >> /etc/apt/
     openssl \
     htop atop strace iotop sysstat ncdu logrotate hdparm pciutils psmisc tree pv \
     cmake make tar flex bison \
-    libssl-dev libsasl2-dev libsystemd-dev/bullseye-backports zlib1g-dev libpq-dev libyaml-dev postgresql-server-dev-all \
+    libssl-dev libsasl2-dev libsystemd-dev zlib1g-dev libpq-dev libyaml-dev postgresql-server-dev-all \
+    libtinfo6 libcurl4 libcap2 libnghttp2-14 librtmp1 libssh2-1 libpsl5 libbrotli1 \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
