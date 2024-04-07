@@ -84,7 +84,7 @@ struct flb_wasm *flb_wasm_instantiate(struct flb_config *config, const char *was
                                       int stdinfd, int stdoutfd, int stderrfd)
 {
     struct flb_wasm *fw;
-    uint32_t buf_size, stack_size = 8 * 1024, heap_size = 8 * 1024;
+    uint32_t buf_size, stack_size = 1 * 1024 * 1024, heap_size = 16 * 1024 * 1024;
     int8_t *buffer = NULL;
     char error_buf[128];
 #if WASM_ENABLE_LIBC_WASI != 0
