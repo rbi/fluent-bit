@@ -27,6 +27,8 @@
 #include <fluent-bit/flb_regex.h>
 #include <fluent-bit/flb_metrics.h>
 
+#include <cmetrics/cmt_histogram.h>
+
 /* refresh token every 50 minutes */
 #define FLB_STD_TOKEN_REFRESH 3000
 
@@ -181,8 +183,8 @@ struct flb_stackdriver {
     flb_sds_t log_name_key;
     flb_sds_t http_request_key;
     int http_request_key_size;
-    bool autoformat_stackdriver_trace;
-    bool test_log_entry_format;
+    int autoformat_stackdriver_trace;
+    int test_log_entry_format;
 
     flb_sds_t stackdriver_agent;
 
@@ -208,6 +210,9 @@ struct flb_stackdriver {
     /* upstream context for metadata end-point */
     struct flb_upstream *metadata_u;
 
+    /* the key to extract unstructured text payload from */
+    flb_sds_t text_payload_key;
+
 #ifdef FLB_HAVE_METRICS
     /* metrics */
     struct cmt_counter *cmt_successful_requests;
@@ -215,6 +220,7 @@ struct flb_stackdriver {
     struct cmt_counter *cmt_requests_total;
     struct cmt_counter *cmt_proc_records_total;
     struct cmt_counter *cmt_retried_records_total;
+    struct cmt_histogram *cmt_write_entries_latency;
 #endif
 
     /* plugin instance */

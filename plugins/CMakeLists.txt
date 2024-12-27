@@ -193,6 +193,8 @@ endmacro()
 # Custom Plugins
 REGISTER_CUSTOM_PLUGIN("custom_calyptia")
 
+REGISTER_IN_PLUGIN("in_blob")
+
 # These plugins works only on Linux
 if(${CMAKE_SYSTEM_NAME} MATCHES "Linux")
   REGISTER_IN_PLUGIN("in_cpu")
@@ -207,6 +209,7 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "Linux")
   REGISTER_IN_PLUGIN("in_docker_events")
   REGISTER_IN_PLUGIN("in_podman_metrics")
   REGISTER_IN_PLUGIN("in_process_exporter_metrics")
+  REGISTER_IN_PLUGIN("in_ebpf")
 endif()
 
 if(${CMAKE_SYSTEM_NAME} MATCHES "Linux" OR ${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
@@ -286,6 +289,7 @@ REGISTER_PROCESSOR_PLUGIN("processor_content_modifier")
 REGISTER_PROCESSOR_PLUGIN("processor_labels")
 REGISTER_PROCESSOR_PLUGIN("processor_metrics_selector")
 REGISTER_PROCESSOR_PLUGIN("processor_sql")
+REGISTER_PROCESSOR_PLUGIN("processor_opentelemetry_envelope")
 
 # OUTPUTS
 # =======

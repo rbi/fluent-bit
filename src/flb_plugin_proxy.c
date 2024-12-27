@@ -50,15 +50,6 @@ static void proxy_cb_flush(struct flb_event_chunk *event_chunk,
     (void) i_ins;
     (void) config;
 
-    /* To prevent flush callback executions, we need to check the
-     * status of hot-reloading. The actual problem is: we don't have
-     * pause procedure/mechanism for output plugin. For now, we just halt the
-     * flush callback here during hot-reloading is in progress. */
-    if (config->shutdown_by_hot_reloading == FLB_TRUE) {
-        flb_trace("[GO] hot-reloading is in progress. Retry flushing");
-        FLB_OUTPUT_RETURN(FLB_RETRY);
-    }
-
 #ifdef FLB_HAVE_PROXY_GO
     if (ctx->proxy->def->proxy == FLB_PROXY_GOLANG) {
         flb_trace("[GO] entering go_flush()");
@@ -307,9 +298,9 @@ static void flb_proxy_input_cb_destroy(struct flb_input_plugin *plugin)
 static int flb_proxy_input_cb_pre_run(struct flb_input_instance *ins,
                                       struct flb_config *config, void *data)
 {
+    int ret = -1;
     struct flb_plugin_proxy_context *pc;
     struct flb_plugin_proxy *proxy;
-    int ret;
 
     pc = (struct flb_plugin_proxy_context *)(ins->context);
     proxy = pc->proxy;
@@ -327,9 +318,9 @@ static int flb_proxy_input_cb_pre_run(struct flb_input_instance *ins,
 
 static int flb_proxy_output_cb_pre_run(void *out_context, struct flb_config *config)
 {
+    int ret = -1;
     struct flb_plugin_proxy_context *ctx = out_context;
     struct flb_plugin_proxy *proxy = (ctx->proxy);
-    int ret;
 
     if (!out_context) {
         return 0;

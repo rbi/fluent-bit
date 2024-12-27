@@ -91,8 +91,8 @@ static int in_opentelemetry_init(struct flb_input_instance *ins,
     port = (unsigned short int) strtoul(ctx->tcp_port, NULL, 10);
 
     if (ctx->enable_http2) {
-        ret = flb_http_server_init(&ctx->http_server, 
-                                    HTTP_PROTOCOL_AUTODETECT,
+        ret = flb_http_server_init(&ctx->http_server,
+                                    HTTP_PROTOCOL_VERSION_AUTODETECT,
                                     (FLB_HTTP_SERVER_FLAG_KEEPALIVE | FLB_HTTP_SERVER_FLAG_AUTO_INFLATE),
                                     NULL,
                                     ins->host.listen,
@@ -202,6 +202,14 @@ static struct flb_config_map config_map[] = {
     },
 
     {
+     FLB_CONFIG_MAP_BOOL, "profiles_support", "false",
+     0, FLB_TRUE, offsetof(struct flb_opentelemetry, profile_support_enabled),
+     "This is an experimental feature whoses specification is not stable yet, " \
+     "feel free to test it but please do not enable this in production " \
+     "environments"
+    },
+
+    {
      FLB_CONFIG_MAP_SIZE, "buffer_max_size", HTTP_BUFFER_MAX_SIZE,
      0, FLB_TRUE, offsetof(struct flb_opentelemetry, buffer_max_size),
      ""
@@ -232,6 +240,11 @@ static struct flb_config_map config_map[] = {
      FLB_CONFIG_MAP_BOOL, "raw_traces", "false",
      0, FLB_TRUE, offsetof(struct flb_opentelemetry, raw_traces),
      "Forward traces without processing"
+    },
+
+    {
+     FLB_CONFIG_MAP_STR, "logs_metadata_key", "otlp",
+     0, FLB_TRUE, offsetof(struct flb_opentelemetry, logs_metadata_key),
     },
 
     /* EOF */

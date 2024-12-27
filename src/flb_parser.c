@@ -152,6 +152,7 @@ struct flb_parser *flb_parser_create(const char *name, const char *format,
                                      const char *time_offset,
                                      int time_keep,
                                      int time_strict,
+                                     int time_system_timezone,
                                      int logfmt_no_bare_keys,
                                      struct flb_parser_types *types,
                                      int types_len,
@@ -312,8 +313,17 @@ struct flb_parser *flb_parser_create(const char *name, const char *format,
             p->time_frac_secs = (tmp + 2);
         }
 
-        /* Optional fixed timezone offset */
-        if (time_offset) {
+        /*
+         * Fall back to the system timezone
+         * if there is no zone parsed from the log.
+         */
+        p->time_system_timezone = time_system_timezone;
+
+        /*
+         * Optional fixed timezone offset, only applied if
+         * not falling back to system timezone.
+         */
+        if (!p->time_system_timezone && time_offset) {
             diff = 0;
             len = strlen(time_offset);
             ret = flb_parser_tzone_offset(time_offset, len, &diff);
@@ -471,9 +481,9 @@ static flb_sds_t get_parser_key(struct flb_config *config,
     return val;
 }
 
-/* Config file: read 'parser' definitions */
-static int parser_conf_file(const char *cfg, struct flb_cf *cf,
-                            struct flb_config *config)
+/* Load each parser definition set in 'struct flb_cf *cf' */
+int flb_parser_load_parser_definitions(const char *cfg, struct flb_cf *cf,
+                                       struct flb_config *config)
 {
     int i = 0;
     flb_sds_t name;
@@ -487,6 +497,7 @@ static int parser_conf_file(const char *cfg, struct flb_cf *cf,
     int skip_empty;
     int time_keep;
     int time_strict;
+    int time_system_timezone;
     int logfmt_no_bare_keys;
     int types_len;
     struct mk_list *head;
@@ -530,7 +541,7 @@ static int parser_conf_file(const char *cfg, struct flb_cf *cf,
                       name, cfg);
             goto fconf_early_error;
         }
-        
+
         /* skip_empty_values */
         skip_empty = FLB_TRUE;
         tmp_str = get_parser_key(config, cf, s, "skip_empty_values");
@@ -561,6 +572,13 @@ static int parser_conf_file(const char *cfg, struct flb_cf *cf,
             flb_sds_destroy(tmp_str);
         }
 
+        time_system_timezone = FLB_FALSE;
+        tmp_str = get_parser_key(config, cf, s, "time_system_timezone");
+        if (tmp_str) {
+            time_system_timezone = flb_utils_bool(tmp_str);
+            flb_sds_destroy(tmp_str);
+        }
+
         /* time_offset (UTC offset) */
         time_offset = get_parser_key(config, cf, s, "time_offset");
 
@@ -587,7 +605,8 @@ static int parser_conf_file(const char *cfg, struct flb_cf *cf,
         /* Create the parser context */
         if (!flb_parser_create(name, format, regex, skip_empty,
                                time_fmt, time_key, time_offset, time_keep, time_strict,
-                               logfmt_no_bare_keys, types, types_len, decoders, config)) {
+                               time_system_timezone, logfmt_no_bare_keys, types, types_len,
+                               decoders, config)) {
             goto fconf_error;
         }
 
@@ -661,6 +680,17 @@ static int parser_conf_file(const char *cfg, struct flb_cf *cf,
     return -1;
 }
 
+static int multiline_rule_create(struct flb_ml_parser *ml_parser,
+                                 char *from_state,
+                                 char *regex_pattern,
+                                 char *to_state)
+{
+    int ret;
+
+    ret = flb_ml_rule_create(ml_parser, from_state, regex_pattern, to_state, NULL);
+    return ret;
+}
+
 static int multiline_load_regex_rules(struct flb_ml_parser *ml_parser,
                                       struct flb_cf_section *section,
                                       struct flb_config *config)
@@ -673,7 +703,47 @@ static int multiline_load_regex_rules(struct flb_ml_parser *ml_parser,
     struct flb_slist_entry *from_state;
     struct flb_slist_entry *regex_pattern;
     struct flb_slist_entry *tmp;
+    struct mk_list *g_head;
+    struct flb_cf_group *group;
+    struct cfl_variant *var_state;
+    struct cfl_variant *var_regex;
+    struct cfl_variant *var_next_state;
 
+    /* Check if we have groups (coming from Yaml style config */
+    mk_list_foreach(g_head, &section->groups) {
+        /* Every group is a rule */
+        group = cfl_list_entry(g_head, struct flb_cf_group, _head);
+
+        var_state = cfl_kvlist_fetch(group->properties, "state");
+        if (!var_state || var_state->type != CFL_VARIANT_STRING) {
+            flb_error("[multiline parser: %s] invalid 'state' key", ml_parser->name);
+            return -1;
+        }
+
+        var_regex = cfl_kvlist_fetch(group->properties, "regex");
+        if (!var_regex || var_regex->type != CFL_VARIANT_STRING) {
+            flb_error("[multiline parser: %s] invalid 'regex' key", ml_parser->name);
+            return -1;
+        }
+
+        var_next_state = cfl_kvlist_fetch(group->properties, "next_state");
+        if (!var_next_state || var_next_state->type != CFL_VARIANT_STRING) {
+            flb_error("[multiline parser: %s] invalid 'next_state' key", ml_parser->name);
+            return -1;
+        }
+
+        ret = multiline_rule_create(ml_parser,
+                                    var_state->data.as_string,
+                                    var_regex->data.as_string,
+                                    var_next_state->data.as_string);
+
+        if (ret == -1) {
+            flb_error("[multiline parser: %s] error creating rule", ml_parser->name);
+            return -1;
+        }
+    }
+
+    /* Multiline rules set by a Fluent Bit classic mode config */
     cfl_list_foreach(head, &section->properties->list) {
         entry = cfl_list_entry(head, struct cfl_kvpair, _head);
 
@@ -686,7 +756,7 @@ static int multiline_load_regex_rules(struct flb_ml_parser *ml_parser,
         ret = flb_slist_split_tokens(&list, entry->val->data.as_string, 3);
         if (ret == -1) {
             flb_error("[multiline parser: %s] invalid section on key '%s'",
-                      ml_parser->name, entry->key);
+                    ml_parser->name, entry->key);
             return -1;
         }
 
@@ -715,11 +785,10 @@ static int multiline_load_regex_rules(struct flb_ml_parser *ml_parser,
             return -1;
         }
 
-        ret = flb_ml_rule_create(ml_parser,
-                                 from_state->str,
-                                 regex_pattern->str,
-                                 to_state,
-                                 NULL);
+        ret = multiline_rule_create(ml_parser,
+                                    from_state->str,
+                                    regex_pattern->str,
+                                    to_state);
         if (ret == -1) {
             flb_error("[multiline parser: %s] error creating rule",
                       ml_parser->name);
@@ -743,8 +812,8 @@ static int multiline_load_regex_rules(struct flb_ml_parser *ml_parser,
 
 
 /* config file: read 'multiline_parser' sections */
-static int multiline_parser_conf_file(const char *cfg, struct flb_cf *cf,
-                                      struct flb_config *config)
+int flb_parser_load_multiline_parser_definitions(const char *cfg, struct flb_cf *cf,
+                                                 struct flb_config *config)
 {
     int ret;
     int type;
@@ -761,6 +830,10 @@ static int multiline_parser_conf_file(const char *cfg, struct flb_cf *cf,
     struct mk_list *head;
     struct flb_cf_section *s;
     struct flb_ml_parser *ml_parser;
+
+    /*
+     * debug content of cf: flb_cf_dump(cf);
+     */
 
     /* read all 'multiline_parser' sections */
     mk_list_foreach(head, &cf->multiline_parsers) {
@@ -927,15 +1000,15 @@ int flb_parser_conf_file(const char *file, struct flb_config *config)
         return -1;
     }
 
-    /* process 'parser' sections */
-    ret = parser_conf_file(cfg, cf, config);
+    /* load the parser definitions */
+    ret = flb_parser_load_parser_definitions(cfg, cf, config);
     if (ret == -1) {
         flb_cf_destroy(cf);
         return -1;
     }
 
     /* processs 'multiline_parser' sections */
-    ret = multiline_parser_conf_file(cfg, cf, config);
+    ret = flb_parser_load_multiline_parser_definitions(cfg, cf, config);
     if (ret == -1) {
         flb_cf_destroy(cf);
         return -1;

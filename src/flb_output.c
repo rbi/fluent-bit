@@ -279,7 +279,7 @@ int flb_output_task_singleplex_enqueue(struct flb_task_queue *queue,
     if (is_empty) {
         return flb_output_task_queue_flush_one(out_ins->singleplex_queue);
     }
-    
+
     return 0;
 }
 
@@ -300,7 +300,7 @@ int flb_output_task_singleplex_flush_next(struct flb_task_queue *queue)
         mk_list_del(&ended_task->_head);
         flb_free(ended_task);
     }
-    
+
     /* Flush if there is a pending task queued */
     is_empty = mk_list_is_empty(&queue->pending) == 0;
     if (!is_empty) {
@@ -464,6 +464,12 @@ void flb_output_exit(struct flb_config *config)
         ins = mk_list_entry(head, struct flb_output_instance, _head);
         p = ins->p;
 
+        if (ins->is_threaded == FLB_FALSE) {
+            if (ins->p->cb_worker_exit) {
+                ins->p->cb_worker_exit(ins->context, ins->config);
+            }
+        }
+
         /* Stop any worker thread */
         if (flb_output_is_threaded(ins) == FLB_TRUE) {
             flb_output_thread_pool_destroy(ins);
@@ -479,6 +485,7 @@ void flb_output_exit(struct flb_config *config)
     params = FLB_TLS_GET(out_flush_params);
     if (params) {
         flb_free(params);
+        FLB_TLS_SET(out_flush_params, NULL);
     }
 }
 
@@ -678,6 +685,7 @@ struct flb_output_instance *flb_output_new(struct flb_config *config,
     instance->tls                   = NULL;
     instance->tls_debug             = -1;
     instance->tls_verify            = FLB_TRUE;
+    instance->tls_verify_hostname   = FLB_FALSE;
     instance->tls_vhost             = NULL;
     instance->tls_ca_path           = NULL;
     instance->tls_ca_file           = NULL;
@@ -721,6 +729,7 @@ struct flb_output_instance *flb_output_new(struct flb_config *config,
 
     /* Tests */
     instance->test_formatter.callback = plugin->test_formatter.callback;
+    instance->test_response.callback = plugin->test_response.callback;
 
 
     return instance;
@@ -870,6 +879,10 @@ int flb_output_set_property(struct flb_output_instance *ins,
     }
     else if (prop_key_check("tls.verify", k, len) == 0 && tmp) {
         ins->tls_verify = flb_utils_bool(tmp);
+        flb_sds_destroy(tmp);
+    }
+    else if (prop_key_check("tls.verify_hostname", k, len) == 0 && tmp) {
+        ins->tls_verify_hostname = flb_utils_bool(tmp);
         flb_sds_destroy(tmp);
     }
     else if (prop_key_check("tls.debug", k, len) == 0 && tmp) {
@@ -1039,7 +1052,6 @@ int flb_output_plugin_property_check(struct flb_output_instance *ins,
         if (!config_map) {
             flb_error("[output] error loading config map for '%s' plugin",
                       p->name);
-            flb_output_instance_destroy(ins);
             return -1;
         }
         ins->config_map = config_map;
@@ -1249,6 +1261,16 @@ int flb_output_init_all(struct flb_config *config)
                 flb_output_instance_destroy(ins);
                 return -1;
             }
+
+            if (ins->tls_verify_hostname == FLB_TRUE) {
+                ret = flb_tls_set_verify_hostname(ins->tls, ins->tls_verify_hostname);
+                if (ret == -1) {
+                    flb_error("[output %s] error set up to verify hostname in TLS context",
+                              ins->name);
+
+                    return -1;
+                }
+            }
         }
 #endif
         /*
@@ -1297,6 +1319,8 @@ int flb_output_init_all(struct flb_config *config)
             return -1;
         }
 
+        ins->notification_channel = config->notification_channels[1];
+
         /* Multi-threading enabled if configured */
         ret = flb_output_enable_multi_threading(ins, config);
         if (ret == -1) {
@@ -1304,6 +1328,14 @@ int flb_output_init_all(struct flb_config *config)
                       flb_output_name(ins));
             return -1;
         }
+
+        if (ins->is_threaded == FLB_FALSE) {
+            if (ins->p->cb_worker_init) {
+                ret = ins->p->cb_worker_init(ins->context, ins->config);
+            }
+        }
+
+        ins->processor->notification_channel = ins->notification_channel;
 
         /* initialize processors */
         ret = flb_processor_init(ins->processor);

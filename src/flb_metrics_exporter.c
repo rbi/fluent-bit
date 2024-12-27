@@ -63,8 +63,8 @@ static int collect_inputs(msgpack_sbuffer *mp_sbuf, msgpack_packer *mp_pck,
         }
 
         flb_metrics_dump_values(&buf, &s, i->metrics);
-        msgpack_pack_str(mp_pck, i->metrics->title_len);
-        msgpack_pack_str_body(mp_pck, i->metrics->title, i->metrics->title_len);
+        msgpack_pack_str(mp_pck, flb_sds_len(i->metrics->title));
+        msgpack_pack_str_body(mp_pck, i->metrics->title, flb_sds_len(i->metrics->title));
         msgpack_sbuffer_write(mp_sbuf, buf, s);
         flb_free(buf);
     }
@@ -100,8 +100,8 @@ static int collect_filters(msgpack_sbuffer *mp_sbuf, msgpack_packer *mp_pck,
         }
 
         flb_metrics_dump_values(&buf, &s, i->metrics);
-        msgpack_pack_str(mp_pck, i->metrics->title_len);
-        msgpack_pack_str_body(mp_pck, i->metrics->title, i->metrics->title_len);
+        msgpack_pack_str(mp_pck, flb_sds_len(i->metrics->title));
+        msgpack_pack_str_body(mp_pck, i->metrics->title, flb_sds_len(i->metrics->title));
         msgpack_sbuffer_write(mp_sbuf, buf, s);
         flb_free(buf);
     }
@@ -137,8 +137,8 @@ static int collect_outputs(msgpack_sbuffer *mp_sbuf, msgpack_packer *mp_pck,
         }
 
         flb_metrics_dump_values(&buf, &s, i->metrics);
-        msgpack_pack_str(mp_pck, i->metrics->title_len);
-        msgpack_pack_str_body(mp_pck, i->metrics->title, i->metrics->title_len);
+        msgpack_pack_str(mp_pck, flb_sds_len(i->metrics->title));
+        msgpack_pack_str_body(mp_pck, i->metrics->title, flb_sds_len(i->metrics->title));
         msgpack_sbuffer_write(mp_sbuf, buf, s);
         flb_free(buf);
     }
@@ -266,9 +266,10 @@ int flb_me_destroy(struct flb_me *me)
 struct cmt *flb_me_get_cmetrics(struct flb_config *ctx)
 {
     int ret;
-    struct mk_list *head;
+    struct mk_list *head, *processor_head;
     struct flb_input_instance *i;     /* inputs */
-    struct flb_filter_instance *f;    /* filter */
+    struct flb_processor_unit *pu;    /* processors */
+    struct flb_filter_instance *f, *pf;    /* filter */
     struct flb_output_instance *o;    /* output */
     struct cmt *cmt;
 
@@ -308,6 +309,19 @@ struct cmt *flb_me_get_cmetrics(struct flb_config *ctx)
             cmt_destroy(cmt);
             return NULL;
         }
+
+        mk_list_foreach(processor_head, &i->processor->logs) {
+            pu = mk_list_entry(processor_head, struct flb_processor_unit, _head);
+            if (pu->unit_type == FLB_PROCESSOR_UNIT_FILTER) {
+                pf = (struct flb_filter_instance *) pu->ctx;
+                ret = cmt_cat(cmt, pf->cmt);
+                if (ret == -1) {
+                    flb_error("[metrics exporter] could not append metrics from %s", flb_filter_name(pf));
+                    cmt_destroy(cmt);
+                    return NULL;
+                }
+            }
+        }
     }
 
     mk_list_foreach(head, &ctx->filters) {
@@ -329,6 +343,19 @@ struct cmt *flb_me_get_cmetrics(struct flb_config *ctx)
                       flb_output_name(o));
             cmt_destroy(cmt);
             return NULL;
+        }
+
+        mk_list_foreach(processor_head, &o->processor->logs) {
+            pu = mk_list_entry(processor_head, struct flb_processor_unit, _head);
+            if (pu->unit_type == FLB_PROCESSOR_UNIT_FILTER) {
+                pf = (struct flb_filter_instance *) pu->ctx;
+                ret = cmt_cat(cmt, pf->cmt);
+                if (ret == -1) {
+                    flb_error("[metrics exporter] could not append metrics from %s", flb_filter_name(pf));
+                    cmt_destroy(cmt);
+                    return NULL;
+                }
+            }
         }
     }
 

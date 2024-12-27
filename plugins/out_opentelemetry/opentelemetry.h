@@ -23,6 +23,7 @@
 #include <fluent-bit/flb_output_plugin.h>
 #include <fluent-bit/flb_record_accessor.h>
 #include <fluent-bit/flb_ra_key.h>
+#include <fluent-bit/flb_http_client.h>
 
 #define FLB_OPENTELEMETRY_CONTENT_TYPE_HEADER_NAME "Content-Type"
 #define FLB_OPENTELEMETRY_MIME_PROTOBUF_LITERAL    "application/x-protobuf"
@@ -43,6 +44,10 @@ struct opentelemetry_body_key {
 
 /* Plugin context */
 struct opentelemetry_context {
+    int   enable_http2_flag;
+    char *enable_http2;
+    int   enable_grpc_flag;
+
     /* HTTP Auth */
     char *http_user;
     char *http_passwd;
@@ -53,11 +58,23 @@ struct opentelemetry_context {
     int proxy_port;
 
     /* HTTP URI */
+    char *traces_uri_sanitized;
+    char *metrics_uri_sanitized;
+    char *logs_uri_sanitized;
     char *traces_uri;
+    char *grpc_traces_uri;
     char *metrics_uri;
+    char *grpc_metrics_uri;
     char *logs_uri;
+    char *grpc_logs_uri;
     char *host;
     int port;
+
+    /* HTTP client */
+    struct flb_http_client_ng http_client;
+
+    /* record metadata parsing */
+    flb_sds_t logs_metadata_key;
 
     /* metadata keys */
     flb_sds_t logs_observed_timestamp_metadata_key;
@@ -103,7 +120,7 @@ struct opentelemetry_context {
     /* Number of logs to flush at a time */
     int batch_size;
 
-    /* Log the response paylod */
+    /* Log the response payload */
     int log_response_payload;
 
     /* config reader for 'add_label' */
@@ -133,12 +150,37 @@ struct opentelemetry_context {
     /* Arbitrary HTTP headers */
     struct mk_list *headers;
 
-
     /* instance context */
     struct flb_output_instance *ins;
 
     /* Compression mode (gzip) */
     int compress_gzip;
+
+    /* FLB/OTLP Record accessor patterns */
+    struct flb_record_accessor *ra_meta_schema;
+    struct flb_record_accessor *ra_meta_resource_id;
+    struct flb_record_accessor *ra_meta_scope_id;
+    struct flb_record_accessor *ra_resource_attr;
+    struct flb_record_accessor *ra_resource_schema_url;
+
+    struct flb_record_accessor *ra_scope_name;
+    struct flb_record_accessor *ra_scope_version;
+    struct flb_record_accessor *ra_scope_attr;
+
+    /* log: metadata components coming from OTLP */
+    struct flb_record_accessor *ra_log_meta_otlp_observed_ts;
+    struct flb_record_accessor *ra_log_meta_otlp_timestamp;
+    struct flb_record_accessor *ra_log_meta_otlp_severity_number;
+    struct flb_record_accessor *ra_log_meta_otlp_severity_text;
+    struct flb_record_accessor *ra_log_meta_otlp_attr;
+    struct flb_record_accessor *ra_log_meta_otlp_trace_id;
+    struct flb_record_accessor *ra_log_meta_otlp_span_id;
+    struct flb_record_accessor *ra_log_meta_otlp_trace_flags;
 };
 
+int opentelemetry_post(struct opentelemetry_context *ctx,
+                       const void *body, size_t body_len,
+                       const char *tag, int tag_len,
+                       const char *http_uri,
+                       const char *grpc_uri);
 #endif

@@ -48,6 +48,11 @@ enum {
     CM_CONTEXT_LOG_METADATA,
     CM_CONTEXT_LOG_BODY,
 
+    CM_CONTEXT_OTEL_RESOURCE_ATTR,
+    CM_CONTEXT_OTEL_SCOPE_NAME,
+    CM_CONTEXT_OTEL_SCOPE_VERSION,
+    CM_CONTEXT_OTEL_SCOPE_ATTR,
+
     /* Metrics */
     CM_CONTEXT_METRIC_NAME,
     CM_CONTEXT_METRIC_DESCRIPTION,
@@ -111,5 +116,10 @@ int cm_traces_process(struct flb_processor_instance *ins,
                       struct ctrace *traces_context,
                       const char *tag, int tag_len);
 
+int cm_metrics_process(struct flb_processor_instance *ins,
+                       struct content_modifier_ctx *ctx,
+                       struct cmt *in_cmt,
+                       struct cmt **out_cmt,
+                       const char *tag, int tag_len);
 
 #endif

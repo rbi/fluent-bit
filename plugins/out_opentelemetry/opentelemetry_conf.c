@@ -22,6 +22,7 @@
 #include <fluent-bit/flb_pack.h>
 #include <fluent-bit/flb_sds.h>
 #include <fluent-bit/flb_kv.h>
+#include <fluent-bit/flb_record_accessor.h>
 
 #include "opentelemetry.h"
 #include "opentelemetry_conf.h"
@@ -182,19 +183,20 @@ static int config_add_labels(struct flb_output_instance *ins,
 * it can adjust the HTTP requests.
 */
 
-static void check_proxy(struct flb_output_instance *ins,
-                        struct opentelemetry_context *ctx,
-                        char *host, char *port,
-                        char *protocol, char *uri){
+static int check_proxy(struct flb_output_instance *ins,
+                       struct opentelemetry_context *ctx,
+                       char *host, char *port,
+                       char *protocol, char *uri){
 
-    const char *tmp = NULL;
     int ret;
+    const char *tmp = NULL;
+
     tmp = flb_output_get_property("proxy", ins);
     if (tmp) {
         ret = flb_utils_url_split(tmp, &protocol, &host, &port, &uri);
         if (ret == -1) {
             flb_plg_error(ctx->ins, "could not parse proxy parameter: '%s'", tmp);
-            flb_free(ctx);
+            return -1;
         }
 
         ctx->proxy_host = host;
@@ -208,6 +210,8 @@ static void check_proxy(struct flb_output_instance *ins,
     else {
         flb_output_net_default("127.0.0.1", 80, ins);
     }
+
+    return 0;
 }
 
 static char *sanitize_uri(char *uri){
@@ -248,6 +252,8 @@ struct opentelemetry_context *flb_opentelemetry_context_create(struct flb_output
     struct flb_upstream *upstream;
     struct opentelemetry_context *ctx = NULL;
     const char *tmp = NULL;
+    uint64_t http_client_flags;
+    int http_protocol_version;
 
     /* Allocate plugin context */
     ctx = flb_calloc(1, sizeof(struct opentelemetry_context));
@@ -271,9 +277,17 @@ struct opentelemetry_context *flb_opentelemetry_context_create(struct flb_output
         return NULL;
     }
 
+    ret = check_proxy(ins, ctx, host, port, protocol, metrics_uri);
+    if (ret == -1) {
+        flb_opentelemetry_context_destroy(ctx);
+        return NULL;
+    }
 
-    check_proxy(ins, ctx, host, port, protocol, metrics_uri);
-    check_proxy(ins, ctx, host, port, protocol, logs_uri);
+    ret = check_proxy(ins, ctx, host, port, protocol, logs_uri);
+    if (ret == -1) {
+        flb_opentelemetry_context_destroy(ctx);
+        return NULL;
+    }
 
     /* Check if SSL/TLS is enabled */
 #ifdef FLB_HAVE_TLS
@@ -311,29 +325,49 @@ struct opentelemetry_context *flb_opentelemetry_context_create(struct flb_output
         return NULL;
     }
 
-    logs_uri = sanitize_uri(ctx->logs_uri);
-    traces_uri = sanitize_uri(ctx->traces_uri);
-    metrics_uri = sanitize_uri(ctx->metrics_uri);
-
     ctx->u = upstream;
     ctx->host = ins->host.name;
     ctx->port = ins->host.port;
 
+    ctx->logs_uri_sanitized = sanitize_uri(ctx->logs_uri);
+    ctx->traces_uri_sanitized = sanitize_uri(ctx->traces_uri);
+    ctx->metrics_uri_sanitized = sanitize_uri(ctx->metrics_uri);
 
-    /* Logs Properties */
-    if (logs_uri == NULL) {
+    if (ctx->logs_uri_sanitized == NULL) {
         flb_plg_trace(ctx->ins,
                       "Could not allocate memory for sanitized "
                       "log endpoint uri");
+
+        flb_opentelemetry_context_destroy(ctx);
+
+        return NULL;
     }
-    else {
-        ctx->logs_uri = logs_uri;
+
+    if (ctx->traces_uri_sanitized == NULL) {
+        flb_plg_trace(ctx->ins,
+                      "Could not allocate memory for sanitized "
+                      "trace endpoint uri");
+
+        flb_opentelemetry_context_destroy(ctx);
+
+        return NULL;
+    }
+
+    if (ctx->metrics_uri_sanitized == NULL) {
+        flb_plg_trace(ctx->ins,
+                      "Could not allocate memory for sanitized "
+                      "metric endpoint uri");
+
+        flb_opentelemetry_context_destroy(ctx);
+
+        return NULL;
     }
 
     /* list of 'logs_body_key' */
     ret = log_body_key_list_create(ctx);
     if (ret != 0) {
         flb_opentelemetry_context_destroy(ctx);
+
         return NULL;
     }
 
@@ -349,25 +383,6 @@ struct opentelemetry_context *flb_opentelemetry_context_create(struct flb_output
         flb_opentelemetry_context_destroy(ctx);
         return NULL;
     }
-
-    if (traces_uri == NULL) {
-        flb_plg_trace(ctx->ins,
-                      "Could not allocate memory for sanitized "
-                      "trace endpoint uri");
-    }
-    else {
-        ctx->traces_uri = traces_uri;
-    }
-
-    if (metrics_uri == NULL) {
-        flb_plg_trace(ctx->ins,
-                      "Could not allocate memory for sanitized "
-                      "metric endpoint uri");
-    }
-    else {
-        ctx->metrics_uri = metrics_uri;
-    }
-
 
     /* Set instance flags into upstream */
     flb_output_upstream_set(ctx->u, ins);
@@ -415,7 +430,7 @@ struct opentelemetry_context *flb_opentelemetry_context_create(struct flb_output
     if (ctx->ra_trace_id_metadata == NULL) {
         flb_plg_error(ins, "failed to create ra for trace id");
     }
-    ctx->ra_attributes_metadata = flb_ra_create((char*)ctx->logs_attributes_metadata_key,
+    ctx->ra_attributes_metadata = flb_ra_create((char*) ctx->logs_attributes_metadata_key,
                                                 FLB_FALSE);
     if (ctx->ra_attributes_metadata == NULL) {
         flb_plg_error(ins, "failed to create ra for attributes");
@@ -441,6 +456,125 @@ struct opentelemetry_context *flb_opentelemetry_context_create(struct flb_output
         flb_plg_error(ins, "failed to create ra for message severity number");
     }
 
+    /* record accessor: group metadata */
+    ctx->ra_meta_schema = flb_ra_create("$schema", FLB_FALSE);
+    if (ctx->ra_meta_schema == NULL) {
+        flb_plg_error(ins, "failed to create record accessor for schema");
+    }
+
+    ctx->ra_meta_resource_id = flb_ra_create((char *) "$resource_id", FLB_FALSE);
+    if (ctx->ra_meta_resource_id == NULL) {
+        flb_plg_error(ins, "failed to create record accessor for resource_id");
+    }
+
+    ctx->ra_meta_scope_id = flb_ra_create((char *) "$scope_id", FLB_FALSE);
+    if (ctx->ra_meta_scope_id == NULL) {
+        flb_plg_error(ins, "failed to create record accessor for scope_id");
+    }
+
+    /* record accessor: group body */
+    ctx->ra_resource_attr = flb_ra_create("$resource['attributes']", FLB_FALSE);
+    if (ctx->ra_resource_attr == NULL) {
+        flb_plg_error(ins, "failed to create record accessor for resource attributes");
+    }
+
+    ctx->ra_resource_schema_url = flb_ra_create("$schema_url", FLB_FALSE);
+    if (ctx->ra_resource_schema_url == NULL) {
+        flb_plg_error(ins, "failed to create record accessor for resource schema url");
+    }
+
+    ctx->ra_scope_name = flb_ra_create("$scope['name']", FLB_FALSE);
+    if (ctx->ra_scope_name == NULL) {
+        flb_plg_error(ins, "failed to create record accessor for scope name");
+    }
+
+    ctx->ra_scope_version = flb_ra_create("$scope['version']", FLB_FALSE);
+    if (ctx->ra_scope_version == NULL) {
+        flb_plg_error(ins, "failed to create record accessor for scope version");
+    }
+
+    ctx->ra_scope_attr = flb_ra_create("$scope['attributes']", FLB_FALSE);
+    if (ctx->ra_scope_attr == NULL) {
+        flb_plg_error(ins, "failed to create record accessor for scope attributes");
+    }
+
+    /* log metadata under $otlp (set by in_opentelemetry) */
+
+    ctx->ra_log_meta_otlp_observed_ts = flb_ra_create("$otlp['observed_timestamp']", FLB_FALSE);
+    if (ctx->ra_log_meta_otlp_observed_ts == NULL) {
+        flb_plg_error(ins, "failed to create record accessor for otlp observed timestamp");
+    }
+
+    ctx->ra_log_meta_otlp_timestamp = flb_ra_create("$otlp['timestamp']", FLB_FALSE);
+    if (ctx->ra_log_meta_otlp_timestamp == NULL) {
+        flb_plg_error(ins, "failed to create record accessor for otlp timestamp");
+    }
+
+    ctx->ra_log_meta_otlp_severity_number = flb_ra_create("$otlp['severity_number']", FLB_FALSE);
+    if (ctx->ra_log_meta_otlp_severity_number == NULL) {
+        flb_plg_error(ins, "failed to create record accessor for otlp severity number");
+    }
+
+    ctx->ra_log_meta_otlp_severity_text = flb_ra_create("$otlp['severity_text']", FLB_FALSE);
+    if (ctx->ra_log_meta_otlp_severity_text == NULL) {
+        flb_plg_error(ins, "failed to create record accessor for otlp severity text");
+    }
+
+    ctx->ra_log_meta_otlp_attr = flb_ra_create("$otlp['attributes']", FLB_FALSE);
+    if (ctx->ra_log_meta_otlp_attr == NULL) {
+        flb_plg_error(ins, "failed to create record accessor for otlp attributes");
+    }
+
+    ctx->ra_log_meta_otlp_trace_id = flb_ra_create("$otlp['trace_id']", FLB_FALSE);
+    if (ctx->ra_log_meta_otlp_trace_id == NULL) {
+        flb_plg_error(ins, "failed to create record accessor for otlp trace id");
+    }
+
+    ctx->ra_log_meta_otlp_span_id = flb_ra_create("$otlp['span_id']", FLB_FALSE);
+    if (ctx->ra_log_meta_otlp_span_id == NULL) {
+        flb_plg_error(ins, "failed to create record accessor for otlp span id");
+    }
+
+    ctx->ra_log_meta_otlp_trace_flags = flb_ra_create("$otlp['trace_flags']", FLB_FALSE);
+    if (ctx->ra_log_meta_otlp_trace_flags == NULL) {
+        flb_plg_error(ins, "failed to create record accessor for otlp trace flags");
+    }
+
+    http_client_flags = FLB_HTTP_CLIENT_FLAG_AUTO_DEFLATE |
+                        FLB_HTTP_CLIENT_FLAG_AUTO_INFLATE;
+
+    if (ctx->u->base.net.keepalive) {
+        http_client_flags |= FLB_HTTP_CLIENT_FLAG_KEEPALIVE;
+    }
+
+    ctx->enable_http2_flag = FLB_TRUE;
+
+    if (strcasecmp(ctx->enable_http2, "force") == 0) {
+        http_protocol_version = HTTP_PROTOCOL_VERSION_20;
+    }
+    else if (flb_utils_bool(ctx->enable_http2)) {
+        http_protocol_version = HTTP_PROTOCOL_VERSION_AUTODETECT;
+    }
+    else {
+        http_protocol_version = HTTP_PROTOCOL_VERSION_11;
+
+        ctx->enable_http2_flag = FLB_FALSE;
+    }
+
+    ret = flb_http_client_ng_init(&ctx->http_client,
+                                  NULL,
+                                  ctx->u,
+                                  http_protocol_version,
+                                  http_client_flags);
+
+    if (ret != 0) {
+        flb_plg_debug(ctx->ins, "http client creation error");
+
+        flb_opentelemetry_context_destroy(ctx);
+
+        ctx = NULL;
+    }
+
     return ctx;
 }
 
@@ -450,10 +584,24 @@ void flb_opentelemetry_context_destroy(struct opentelemetry_context *ctx)
         return;
     }
 
+    flb_http_client_ng_destroy(&ctx->http_client);
+
     flb_kv_release(&ctx->kv_labels);
 
     if (ctx->u) {
         flb_upstream_destroy(ctx->u);
+    }
+
+    if (ctx->logs_uri_sanitized != NULL &&  ctx->logs_uri_sanitized != ctx->logs_uri) {
+        flb_free(ctx->logs_uri_sanitized);
+    }
+
+    if (ctx->traces_uri_sanitized != NULL && ctx->traces_uri_sanitized != ctx->traces_uri) {
+        flb_free(ctx->traces_uri_sanitized);
+    }
+
+    if (ctx->metrics_uri_sanitized != NULL && ctx->metrics_uri_sanitized != ctx->metrics_uri) {
+        flb_free(ctx->metrics_uri_sanitized);
     }
 
     /* release log_body_key_list */
@@ -497,6 +645,63 @@ void flb_opentelemetry_context_destroy(struct opentelemetry_context *ctx)
     }
     if (ctx->ra_severity_number_message) {
         flb_ra_destroy(ctx->ra_severity_number_message);
+    }
+
+    if (ctx->ra_meta_schema) {
+        flb_ra_destroy(ctx->ra_meta_schema);
+    }
+    if (ctx->ra_meta_resource_id) {
+        flb_ra_destroy(ctx->ra_meta_resource_id);
+    }
+    if (ctx->ra_meta_scope_id) {
+        flb_ra_destroy(ctx->ra_meta_scope_id);
+    }
+    if (ctx->ra_resource_attr) {
+        flb_ra_destroy(ctx->ra_resource_attr);
+    }
+    if (ctx->ra_resource_schema_url) {
+        flb_ra_destroy(ctx->ra_resource_schema_url);
+    }
+    if (ctx->ra_scope_name) {
+        flb_ra_destroy(ctx->ra_scope_name);
+    }
+    if (ctx->ra_scope_version) {
+        flb_ra_destroy(ctx->ra_scope_version);
+    }
+    if (ctx->ra_scope_attr) {
+        flb_ra_destroy(ctx->ra_scope_attr);
+    }
+
+    if (ctx->ra_log_meta_otlp_observed_ts) {
+        flb_ra_destroy(ctx->ra_log_meta_otlp_observed_ts);
+    }
+
+    if (ctx->ra_log_meta_otlp_timestamp) {
+        flb_ra_destroy(ctx->ra_log_meta_otlp_timestamp);
+    }
+
+    if (ctx->ra_log_meta_otlp_severity_number) {
+        flb_ra_destroy(ctx->ra_log_meta_otlp_severity_number);
+    }
+
+    if (ctx->ra_log_meta_otlp_severity_text) {
+        flb_ra_destroy(ctx->ra_log_meta_otlp_severity_text);
+    }
+
+    if (ctx->ra_log_meta_otlp_attr) {
+        flb_ra_destroy(ctx->ra_log_meta_otlp_attr);
+    }
+
+    if (ctx->ra_log_meta_otlp_trace_id) {
+        flb_ra_destroy(ctx->ra_log_meta_otlp_trace_id);
+    }
+
+    if (ctx->ra_log_meta_otlp_span_id) {
+        flb_ra_destroy(ctx->ra_log_meta_otlp_span_id);
+    }
+
+    if (ctx->ra_log_meta_otlp_trace_flags) {
+        flb_ra_destroy(ctx->ra_log_meta_otlp_trace_flags);
     }
 
     flb_free(ctx->proxy_host);

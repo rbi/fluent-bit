@@ -79,7 +79,7 @@ static int send_response(struct flb_input_instance *in,
     }
     else if (http_status == 400) {
         flb_sds_printf(&out,
-                       "HTTP/1.1 400 Forbidden\r\n"
+                       "HTTP/1.1 400 Bad Request\r\n"
                        "Server: Fluent Bit v%s\r\n"
                        "Content-Length: %i\r\n\r\n%s",
                        FLB_VERSION_STR,
@@ -233,7 +233,7 @@ int prom_rw_prot_uncompress(struct mk_http_session *session,
 
 
 /*
- * Handle an incoming request. It perform extra checks over the request, if
+ * Handle an incoming request. It performs extra checks over the request, if
  * everything is OK, it enqueue the incoming payload.
  */
 int prom_rw_prot_handle(struct flb_prom_remote_write *ctx,
@@ -299,7 +299,7 @@ int prom_rw_prot_handle(struct flb_prom_remote_write *ctx,
         }
 
         /* New tag skipping the URI '/' */
-        flb_sds_cat(tag, uri + 1, len - 1);
+        flb_sds_cat_safe(&tag, uri + 1, len - 1);
 
         /* Sanitize, only allow alphanum chars */
         for (i = 0; i < flb_sds_len(tag); i++) {
@@ -410,7 +410,7 @@ static int send_response_ng(struct flb_http_response *response,
         flb_http_response_set_message(response, "No Content");
     }
     else if (http_status == 400) {
-        flb_http_response_set_message(response, "Forbidden");
+        flb_http_response_set_message(response, "Bad Request");
     }
 
     if (message != NULL) {
@@ -464,7 +464,7 @@ int prom_rw_prot_handle_ng(struct flb_http_request *request,
 
     /* ToDo: Fix me */
     /* HTTP/1.1 needs Host header */
-    if (request->protocol_version == HTTP_PROTOCOL_HTTP1 &&
+    if (request->protocol_version >= HTTP_PROTOCOL_VERSION_11 &&
         request->host == NULL) {
 
         return -1;

@@ -48,6 +48,7 @@ struct flb_parser {
     char *time_fmt_full;  /* original given time format */
     char *time_key;       /* field name that contains the time */
     int time_offset;      /* fixed UTC offset */
+    int time_system_timezone; /* use the system timezone as a fallback */
     int time_keep;        /* keep time field */
     int time_strict;      /* parse time field strictly */
     int logfmt_no_bare_keys; /* in logfmt parsers, require all keys to have values */
@@ -74,13 +75,19 @@ enum {
     FLB_PARSER_TYPE_HEX,
 };
 
-static inline time_t flb_parser_tm2time(const struct flb_tm *src)
+static inline time_t flb_parser_tm2time(const struct flb_tm *src,
+                                        int use_system_timezone)
 {
     struct tm tmp;
     time_t res;
 
     tmp = src->tm;
-    res = timegm(&tmp) - flb_tm_gmtoff(src);
+    if (use_system_timezone) {
+        tmp.tm_isdst = -1;
+        res = mktime(&tmp);
+    } else {
+        res = timegm(&tmp) - flb_tm_gmtoff(src);
+    }
     return res;
 }
 
@@ -92,6 +99,7 @@ struct flb_parser *flb_parser_create(const char *name, const char *format,
                                      const char *time_offset,
                                      int time_keep,
                                      int time_strict,
+                                     int time_system_timezone,
                                      int logfmt_no_bare_keys,
                                      struct flb_parser_types *types,
                                      int types_len,
@@ -99,6 +107,11 @@ struct flb_parser *flb_parser_create(const char *name, const char *format,
                                      struct flb_config *config);
 int flb_parser_conf_file_stat(const char *file, struct flb_config *config);
 int flb_parser_conf_file(const char *file, struct flb_config *config);
+int flb_parser_load_parser_definitions(const char *cfg, struct flb_cf *cf,
+                                       struct flb_config *config);
+int flb_parser_load_multiline_parser_definitions(const char *cfg, struct flb_cf *cf,
+                                                 struct flb_config *config);
+
 void flb_parser_destroy(struct flb_parser *parser);
 struct flb_parser *flb_parser_get(const char *name, struct flb_config *config);
 int flb_parser_do(struct flb_parser *parser, const char *buf, size_t length,
